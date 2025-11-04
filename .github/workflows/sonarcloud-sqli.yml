@@ -1,6 +1,7 @@
 name: SonarCloud + SQLi export
 
 on:
+  workflow_dispatch:
   push:
     branches: [ master, main ]
   pull_request:
