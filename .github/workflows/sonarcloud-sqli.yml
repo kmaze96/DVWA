@@ -29,15 +29,24 @@ jobs:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
 
+      - name: Verify Java version
+        run: java -version
+
       - name: SonarCloud Scan
         uses: sonarsource/sonarqube-scan-action@v1
-        with:
-          projectBaseDir: .
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # force Java 17
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+          PATH: ${{ env.JAVA_HOME_17_X64 }}/bin:${{ env.PATH }}
+
+          # sonar params
           SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_ORGANIZATION: ${{ secrets.SONAR_ORG }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+        with:
+          projectBaseDir: .
+
 
 
       - name: Wait a few seconds
