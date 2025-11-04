@@ -1,0 +1,96 @@
+name: SonarCloud + SQLi export
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  scan-and-export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK (required by scanner)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache Sonar packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+
+      - name: Run SonarCloud scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.sources=.
+
+      - name: Wait a few seconds
+        run: sleep 15
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Download all issues (Vulnerabilities + Hotspots)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+        run: |
+          PAGE=1
+          > sonar-issues.tmp.json
+          while true; do
+            RESP=$(curl -s -u ${SONAR_TOKEN}: \
+              "https://sonarcloud.io/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&types=VULNERABILITY,SECURITY_HOTSPOT&ps=500&p=${PAGE}")
+            echo "$RESP" | jq '.issues' >> sonar-issues.tmp.json
+            TOTAL=$(echo "$RESP" | jq -r '.total // 0')
+            PS=$(echo "$RESP" | jq -r '.ps // 500')
+            P=$(echo "$RESP" | jq -r '.p // 1')
+            if [ $((P*PS)) -ge $TOTAL ] || [ $TOTAL -eq 0 ]; then break; fi
+            PAGE=$((PAGE+1))
+          done
+          jq -s 'add' sonar-issues.tmp.json > sonar-issues.json
+          rm sonar-issues.tmp.json
+
+      - name: Create SQLi-only CSV
+        env:
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+        run: |
+          jq -r --arg pk "$SONAR_PROJECT_KEY" '
+            map(select(
+              (.message // "" | ascii_downcase | test("sql|injection|cwe-89")) or
+              (.rule    // "" | ascii_downcase | test("sql|injection")) or
+              ((.tags // []) | join(",") | ascii_downcase | test("sql|injection"))
+            )) |
+            (["issueKey","type","severity","rule","file","line","message","url"] | @csv),
+            (.[] | [
+              .key,
+              .type,
+              .severity,
+              .rule,
+              (.component | tostring),
+              (.line // 0 | tostring),
+              (.message | gsub("\n"; " ") | gsub("\""; "'")),
+              ("https://sonarcloud.io/project/issues?id=" + $pk + "&open=" + .key + "&resolved=false&types=VULNERABILITY,SECURITY_HOTSPOT")
+            ] | @csv)
+          ' sonar-issues.json > sqli-findings.csv || echo "No SQLi-like findings"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-sqli-output
+          path: |
+            sonar-issues.json
+            sqli-findings.csv
